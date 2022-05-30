@@ -142,6 +142,10 @@ export default class StringDecoder extends Transformer<StringDecoderOptions> {
       if (typeof ref.indexArgument === 'number') indexArg = ref.indexArgument
       if (typeof ref.keyArgument === 'number') keyArg = ref.keyArgument
     } else {
+      // It complains... A lot. Would rather just completely kill it for now to avoid error spam
+      context.log(context.stringDecoders)
+      context.log(`Failed to decode ${identifier}, no decoder`)
+      process.exit(0)
       throw new TypeError(`Failed to decode ${identifier}, no decoder`)
     }
 
@@ -275,6 +279,152 @@ export default class StringDecoder extends Transformer<StringDecoderOptions> {
         },
       })
     }
+
+    walk(context.ast, {
+      VariableDeclaration(node, _, ancestors) {
+        for (const vd of node.declarations) {
+          if (!Guard.isIdentifier(vd.id)) continue
+          if (!vd.init) continue
+
+          if (Guard.isFunctionExpression(vd.init)) {
+            if (!Guard.isBlockStatement(vd.init.body)) continue
+            let body = vd.init.body.body
+
+            if (!Guard.isReturnStatement(body[body.length - 1])) continue
+            let calcOffset = 0
+
+            // ! This block is only here to make https://gist.github.com/4JX/feba658e27cb51f4d56811cb07b55b4b deobfuscate, needs an actual solution on how to handle these proxies
+            if (body.length < 2) continue
+            if (body.length === 2 && vd.id.name == '_0x15cb61') {
+              if (!Guard.isVariableDeclaration(body[0])) continue
+              if (
+                !Guard.isVariableDeclaration(body[0]) ||
+                !body[0].declarations[0].init ||
+                !Guard.isIdentifier(body[0].declarations[0].init)
+              )
+                continue
+
+              context.log(body[0].declarations[0])
+
+              let ourStringArray = body[0].declarations[0].init.name
+
+              let decFn = {
+                identifier: vd.id.name,
+                stringArrayIdentifier: ourStringArray,
+                offset: 0,
+                type: DecoderFunctionType.SIMPLE,
+                indexArgument: 0,
+                keyArgument: 1,
+              } as DecoderFunction
+
+              context.stringDecoders.push(decFn)
+              if (context.removeGarbage) {
+                ;(node as any).type = 'EmptyStatement'
+              }
+              context.log(
+                'Found decoder function',
+                vd.id?.name,
+                'arrayId =',
+                decFn.stringArrayIdentifier,
+                'offset =',
+                calcOffset,
+                'type =',
+                decFn.type
+              )
+            }
+            // ! End of block
+
+            if (body.length !== 3) continue // Not a proxy string array fn
+
+            // String decoder for the global string array case
+            // var _0x4283 = function (_0x1cc98f, _0x55ec98) {
+            //   _0x1cc98f = _0x1cc98f - 0x1de
+            //   var _0x5c48c0 = _0x5c48[_0x1cc98f]
+            //   return _0x5c48c0
+            // }
+            if (
+              !Guard.isVariableDeclaration(body[1]) ||
+              !body[1].declarations[0].init ||
+              !Guard.isMemberExpression(body[1].declarations[0].init) ||
+              !Guard.isIdentifier(body[1].declarations[0].init.object)
+            )
+              continue
+
+            if (
+              !Guard.isExpressionStatement(body[0]) ||
+              !Guard.isAssignmentExpression(body[0].expression) ||
+              !Guard.isBinaryExpression(body[0].expression.right) ||
+              (!Guard.isLiteral(body[0].expression.right.right) &&
+                !Guard.isUnaryExpression(body[0].expression.right.right))
+            )
+              return
+
+            let ourStringArray = body[1].declarations[0].init.object.name
+
+            calcOffset = literalOrUnaryExpressionToNumber(
+              body[0].expression.right.right
+            )
+            if (body[0].expression.right.operator === '-')
+              calcOffset = calcOffset * -1
+
+            let decFn = {
+              identifier: vd.id.name,
+              stringArrayIdentifier: ourStringArray,
+              offset: calcOffset,
+              type: DecoderFunctionType.SIMPLE,
+              indexArgument: 0,
+              keyArgument: 1,
+            } as DecoderFunction
+
+            context.stringDecoders.push(decFn)
+            if (context.removeGarbage) {
+              ;(node as any).type = 'EmptyStatement'
+            }
+            context.log(
+              'Found decoder function',
+              vd.id?.name,
+              'arrayId =',
+              decFn.stringArrayIdentifier,
+              'offset =',
+              calcOffset,
+              'type =',
+              decFn.type
+            )
+          } else if (Guard.isArrayExpression(vd.init)) {
+            // Globally defined string arrays
+            if (!vd.init.elements.every((e) => Guard.isLiteralString(e as any)))
+              continue
+            let strArrayId = vd.id?.name
+            let strArray = vd.init
+
+            if (
+              !strArray.elements.every((e) => Guard.isLiteralString(e as any))
+            )
+              return
+
+            const strArrayObj = {
+              identifier: strArrayId,
+              type: StringArrayType.ARRAY,
+              strings: (strArray.elements as StringLiteral[]).map(
+                (e) => e.value
+              ),
+            }
+
+            if (context.removeGarbage) {
+              ;(node as any).type = 'EmptyStatement'
+            }
+
+            context.stringArrays.push(strArrayObj)
+            context.log(
+              'Found string array at',
+              strArrayObj.identifier,
+              '#',
+              strArrayObj.strings.length
+            )
+          }
+        }
+      },
+    })
 
     walk(context.ast, {
       FunctionDeclaration(node) {

@@ -125,3 +125,6 @@ dist/
 scratch/
 !scratch/config.js
 !scratch/index.js
+
+.history
+.vscode
